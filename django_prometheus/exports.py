@@ -6,14 +6,19 @@ try:
 except ImportError:
     # Python 3
     from http.server import HTTPServer
+import atexit
 import socket
 import logging
 import os
 import prometheus_client
 import threading
 
-
 logger = logging.getLogger(__name__)
+
+use_consul = getattr(settings, 'PROMETHEUS_CONSUL', False)
+if use_consul:
+    from consul import Consul
+    consul = Consul(host=settings.PROMETHEUS_CONSUL_HOST)
 
 
 def SetupPrometheusEndpointOnPort(port, addr=''):
@@ -81,6 +86,15 @@ def SetupPrometheusEndpointOnPortRange(port_range, addr=''):
             # Python 2 raises socket.error, in Python 3 socket.error is an
             # alias for OSError
             continue  # Try next port
+
+        if use_consul:
+            name = settings.PROMETHEUS_CONSUL_SERVICE_NAME
+            service_id = '{}-{}'.format(name, port)
+            consul.agent.service.register(
+                name, service_id=service_id, port=port,
+                tags=['prometheus'])
+            atexit.register(deregister_id(service_id))
+
         thread = PrometheusEndpointServer(httpd)
         thread.daemon = True
         thread.start()
@@ -109,3 +123,9 @@ def ExportToDjangoView(request):
     return HttpResponse(
         metrics_page,
         content_type=prometheus_client.CONTENT_TYPE_LATEST)
+
+
+def deregister_id(service_id):
+    def dereg():
+        consul.agent.service.deregister(service_id)
+    return dereg
